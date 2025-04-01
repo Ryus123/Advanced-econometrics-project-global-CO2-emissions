@@ -1,0 +1,532 @@
+---
+title: "Analyse économétrique de l'émission mondial de CO² en 2020"
+author: 
+  - DELAR Emmarius
+  - FOFANA Mohamed
+date: "`r Sys.Date()`"
+output:
+  rmdformats::downcute:
+    downcute_theme: chaos
+    highlight: tango
+    number_sections: yes
+  html_document:
+    df_print: paged
+---
+
+```{r setup, echo=FALSE, message=F}
+knitr::opts_knit$set(root.dir = normalizePath(getwd()), echo = F, comment = "")
+```
+
+```{r, echo=FALSE, message=FALSE, include=F}
+#Initialisation de l'environnement de travail et  chargement des packages
+setwd(getwd())
+
+#Installation de pacman pour faciliter l'installation et le chargement des package
+#install.packages("pacman")
+#library(pacman)
+
+#Chargement des package
+pacman::p_load(rmdformats, dplyr, readxl, tidyverse, ggplot2, lmtest, gmm, corrplot, stargazer, ivreg, AER, FactoMineR, sf, leaflet, pls, caret, mlr3tuning, pls,DoubleML,kableExtra,mlr3,mlr3learners,data.table, ggpubr, paradox, ISLR, lattice)
+```
+
+
+```{r, warning=F, include=F}
+data_map <- st_read("data/data_map.shp")
+pal1 <- colorNumeric(palette = c("viridis"),domain = data_map$Ems_CO2)
+
+```
+
+
+```{r, warning=F, out.width="100%", echo=F}
+leaflet(data_map) %>% 
+  addTiles() %>%
+  addControl("Emission de CO² en tonnes par habitant en 2020", position = "bottomright", className="map-title") %>%
+  setView( lat=10, lng=5 , zoom=2) %>%
+  addPolygons(color=~pal1(Ems_CO2),
+              popup=~str_c(as.character(name),
+                             as.character( round(Ems_CO2,2) ),sep=" : "),
+              fillOpacity = 0.8,
+              opacity = 1) %>%
+  addLegend(pal=pal1,value=~Ems_CO2,position="bottomleft", title="CO² en tonnes/hab.")
+
+```
+
+# Présentation du sujet
+
+## Introduction
+
+En 2023, ce n'est pas moins de 40,9 milliards de tonnes de CO² qui ont été émis au niveau mondial et qui participe donc à l'aggravation du changement climatique. A ce stade, il est primordial d'étudier ce phénomène afin de pouvoir mieux le comprendre et prévoir son évolution future. Dans cette analyse, nous chercherons à étudier les facteurs déterminants faisant qu'un pays ait une émission de CO² plus ou moins importante.
+
+## Problématique
+
+Ce rapport se concentre principalement sur les déterminants de la richesse du pays, la structure de sa population, le niveau d'éducation et les conditions de vie de chaque pays.
+
+Nous chercherons donc à travers cette analyse à expliquer la différence d'émissions entre pays à partir de ces facteurs et en utilisant différentes méthodes de modélisation.
+
+D’autres informations, telles que les moyens mis en œuvre et d’autres effets liés aux réglementations visant à lutter contre la pollution, pourraient être déterminantes, cependant ils sont difficilement mesurables, ce qui nous empêche de les inclure dans notre modèle.
+
+
+## Modèle théorique
+
+En se basant sur le PIB, le taux de mortalité, (mesure du niveau d'éducation), la part des produits manufacturé, le log de la population, (indicateur sur la structure de la population) nous allons modéliser l'émission de CO² par pays.
+Cependant, il y a une influence du PIB sur le CO² mais également une influence de l'émission de CO² sur le PIB. Cela se traduit par un problème d'endogénéïté.
+
+Equations simultanées : 
+
+$\begin{cases} log(CO²) = {\beta_0}+ {\beta_1}log(PIB) + {\beta_2}X_2 + {\beta_3}X_3 + {\beta_4}X_4+ {\beta_5}X_5 + {\beta_6}X_6 + {\beta_7}X_7 + {\epsilon_C}  \\[0.5cm] log(PIB)={\theta_0}+ {\theta_1}log(CO²) + {\theta_2}Z_2 + {\theta_3}Z_3  + {\theta_4}Z_4 + {\epsilon_P} \end{cases}$
+
+Avec : 
+
+  * $X_2 :$  Pourcentage d'adolescent déscolarisé
+  * $X_3 :$  Pourcentage de la population agé de 15 à 64 ans 
+  * $X_4 :$  Population totale
+  * $X_5 :$  Pourcentage de mortalité enfantile pour 1000 nouveaux nés
+  * $X_6 :$  Formation brute de capital fixe en % du PIB
+  * $X_7 :$  Pourcentage des produits manufacturés dans le PIB
+  * $X_8 :$  Pourcentage du commerce dans le PIB (mesure de l'ouverture)
+
+Nous allons utiliser le taux de mortalité, la mesure de l'ouverture et le pourcentage d'adolescent déscolarisé comme instruments dans notre modèle.
+
+$Z=$ 
+$\begin{pmatrix} X_2\\X_5 \\ X_8  \end{pmatrix}$
+
+# Collecte et traitement des données
+
+Les données utilisées pour traiter notre problématique et réaliser notre modélisation proviennet essentiellement de la plateforme DataBank mis en place par la banque mondiale à l'url : https://databank.worldbank.org/ .
+De là, nous avons assemblés 10 variables pour un ensemble de 217 observations. Ces variables sont le PIB par tête en dollars constant de 2017, l'émissions de CO2 en tonnes métriques par habitant (variable à expliquer), le pourcentage d'adolescents non scolarisés en age d'être dans le secondaire, le pourcentage de la population entre 15 et 65 ans, la population totale,
+le taux de mortalité infantile pour 1,000 naissances, la formation brute de capital en pourcentage du PIB, la valeur ajoutée des produits manufacturé et le ratio commerce/PIB.
+
+
+## Présentation du jeu de données
+
+```{r, echo=F}
+#Importation des données
+Emission <- read_excel("data/DATA_ProjetEA.xlsx", na = "..") %>%
+  select(`Country Name`,
+         `GDP per capita, PPP (constant 2017 international $) [NY.GDP.PCAP.PP.KD]`,
+         `CO2 emissions (metric tons per capita) [EN.ATM.CO2E.PC]`,
+         `Adolescents out of school (% of lower secondary school age) [SE.SEC.UNER.LO.ZS]`,
+         `Population ages 15-64 (% of total population) [SP.POP.1564.TO.ZS]`,
+         `Mortality rate, infant (per 1,000 live births) [SP.DYN.IMRT.IN]`,
+         `Gross fixed capital formation (% of GDP) [NE.GDI.FTOT.ZS]`,
+         `Manufacturing, value added (% of GDP) [NV.IND.MANF.ZS]`,
+         `Trade (% of GDP) [NE.TRD.GNFS.ZS]` ) %>%
+  column_to_rownames( var = "Country Name")
+
+colnames(Emission) <- c("GDP_per_capita",
+                        "Emissions_CO2",
+                        "Adolescents_out_of_school",
+                        "Population_15_64",
+                        "Mortality_rate",
+                        "Gross_fixed_capital_formation",
+                        "Manufacturing_percent_of_GDP",
+                        "Trade_percent_of_GDP")
+```
+
+Le résumé de l'ensemble du jeu de données est donné par :
+```{r, echo=F, comment=""}
+stargazer(Emission, type = "text", title = "Résumé statistique des variables", digits = 2)
+```
+
+Nous pouvons visualiser la dispertion de chaqu'une des variables de notre modèle.Certaines d'entre elles ne présentent pas 217 observations cela indique qu'il y a des valeurs manquantes dans notres base de données. Aussi, nous relevons une forte dispersion des valeurs pour l'ensemble des valeurs. 
+
+Nous allons visualiser plus en profondeur chaqu'une des variables et le lien qu'elles ont 2 à 2. 
+
+
+```{r, echo=F, include=F}
+# Traitement du jeu de données
+# Supprimons les lignes avec des valeurs manquantes
+Emission <- na.omit(Emission)
+
+# Vérifions les dimensions après le nettoyage
+dim(Emission)
+```
+
+# Analyse descriptive des données
+
+## Statistiques descriptives univarier
+```{r, warning=F}
+# Création d'une fonction pour les boxplots
+graph_TD.bp <- function(uneVariable){
+  ggplot(data = Emission, aes_string(x = "factor(0)", y = uneVariable)) +
+    geom_boxplot() + xlab("") + ylab("") + ggtitle(uneVariable)
+}
+
+# Appliquer la fonction aux différentes variables
+p0.bp <- graph_TD.bp("Emissions_CO2")
+p1.bp <- graph_TD.bp("GDP_per_capita")
+p2.bp <- graph_TD.bp("Mortality_rate")
+p3.bp <- graph_TD.bp("Manufacturing_percent_of_GDP")
+p4.bp <- graph_TD.bp("Trade_percent_of_GDP")
+p5.bp <- graph_TD.bp("Adolescents_out_of_school")
+p6.bp <- graph_TD.bp("Population_15_64")
+p8.bp <- graph_TD.bp("Gross_fixed_capital_formation")
+
+```
+
+```{r,out.width="100%"}
+gridExtra::grid.arrange(p0.bp, p1.bp, p2.bp, ncol = 3)
+```
+
+On observe sur ce premier regroupement de boxplot une forte variabilité du taux de mortalité infantile d'autant plus forte une fois la médiane passé. De même pour le PIB par habitant, les valeurs sont très dispercé à passé la médiane et plusieur pays qui se distinguent des autres. Le l'Emission de CO2 quant a lui est plus équilibré (moins de dispersion) et seul 3 valeurs semblent se distinguer des autres.
+
+```{r,out.width="100%"}
+gridExtra::grid.arrange(p3.bp,p4.bp, p5.bp, ncol=3)
+```
+De même sur cette seconde représentation sauf que seulement un individu qui se distigue largement des autres pour Valeur ajoutée manufacturière (% du PIB) 
+
+
+```{r,out.width="100%"}
+gridExtra::grid.arrange(p6.bp, p8.bp, ncol = 2)
+```
+Sur cette dernière représentent on constate une distribution pratiquement proportionel à la médiane pour  Pourcentage de la population âgée de 15 à 64 ans . Et aussi des individu se distingue des autres .
+
+```{r, echo=F}
+#Nettoyage de la mémoire
+rm(list = c("p0.bp", "p1.bp", "p2.bp","p3.bp","p4.bp", "p5.bp","p6.bp", "p8.bp", "data_map","pal1"  ) )
+```
+
+
+
+## Statistiques bivariées
+```{r}
+# Création d'une fonction pour créer des graphiques
+graph_TD <- function(uneVariable){
+  ggplot(data =Emission, aes_string(x = uneVariable, y = "Emissions_CO2")) + geom_point() 
+}
+
+# Graphique du taux de chômage en fonction de chaque variable 1 à 1
+p1 <- graph_TD("GDP_per_capita")
+p2 <- graph_TD("Mortality_rate")
+p3 <- graph_TD("Manufacturing_percent_of_GDP")
+p4 <- graph_TD("Trade_percent_of_GDP")
+p5 <- graph_TD("Adolescents_out_of_school")
+p6 <- graph_TD("Population_15_64")
+p8 <- graph_TD("Gross_fixed_capital_formation")
+```
+
+
+```{r,out.width="100%"}
+gridExtra::grid.arrange(p1,  p2, p8, ncol = 2)
+```
+
+
+Les émissions de CO2 augmentent avec le PIB par habitant et la formation brute de capital fixe, mais diminuent avec le taux de mortalité infantile. Aucune tendance claire n'est observée avec la population totale.
+
+```{r,out.width="100%"}
+gridExtra::grid.arrange(p3, p4, p5, p6,  ncol = 2)
+```
+Les émissions de CO2 augmentent avec leValeur ajoutée manufacturière (% du PIB) ,  Commerce (% du PIB), Pourcentage de la population âgée de 15 à 64 ans . Aucune tendance claire n'est observée avec le Pourcentage d'adolescents non scolarisés.
+
+```{r, echo=F}
+#Nettoyage de la mémoire
+rm(list = c("p1",  "p2", "p8", "p3", "p4", "p5", "p6") )
+```
+
+
+## Analyse de corrélation et ACP
+
+### Matrice des corrélations
+
+```{r,out.width="100%"}
+# La variable dépendante est Emission de CO2 
+Emission %>% 
+  cor() %>%
+  corrplot::corrplot( tl.cex = 0.5, tl.col = "black", diag = F, type="upper" )
+
+```
+La matrice de corrélation révèle des liens significatifs entre les indicateurs utilisés pour notre analyse. Ce graphique nous permet de constater que PIB par habitant est la variable de notre modèle la plus corrélé aux émission de $CO²$ mais également que celui-ci est fortement corrélé au pourcentage d'adolescent déscolarisé, au pourcentage de mortalité enfantile et au pourcentage du commerce dans le PIB.
+Deux de ces variables (pourcentage d'adolescent déscolarisé; pourcentage de mortalité enfantile) sont également très liées linéairement.
+Tout cela suggère la présence d'endogénéïte entre les émissions de $CO²$ et le PIB par habitant et de multicolinéarité entre les variables choisit dans notre modèle.
+
+### Analyse en composantes principales
+
+Au-delà de trois dimension, il est assez compliqué de visualiser graphiquement la relation que peuvent avoir plusieurs variable. On va donc passer par l'analyse factorielle des correspondence qui pourra nous permettre de déceler les variables qui se ressemble et les pays qui se ressemblent,et ceux qui sont opposé.
+
+
+### Représentation des variables
+```{r,out.width="100%"}
+# Réalisation de l'ACP
+PCA(Emission, scale.unit = TRUE, quanti.sup = c("Emissions_CO2"), graph = FALSE) %>%
+  plot( choix = "var")
+```
+
+
+
+
+L'analyse des deux premieres composantes principales est limité de part la quantité d'information restreinte qu'elle nous renvoie, cependant nous pouvons tout de même constater, en accord avec la matrice de corrélation, que le pourcentage d'adolescent déscolarisé et le pourcentage de mortalité enfantile sont fortement colinéaire. Elle met aussi en avant le lien qu'ils ont avec le pourcentage de la population agé de 15 à 64 ans.
+
+```{r, echo=F}
+#Nettoyage de la mémoire
+rm(list = c("graph_TD",  "graph_TD.bp") )
+```
+
+
+# Problème d'endogénéïté
+
+## Spécification du modèle
+
+Dans un premier temps nous chercherons confirmer l'hypothèse d'endogénéïté entre les émissions de $CO²$ et le PIB par habitant que nous avons présentit en introduction. Nous commençons par définir un modèle naïf par la méthode des MCO avec l'ensemble de nos variables que l'on comparera avec la méthode des doubles moindres carrés. Cela nous permettera de relever les problèmes d'endogénéïté car on sait que les 2MCO sont moins efficaces que les OLS quand les variables explicatives sont toutes exogènes.
+
+```{r}
+#Estimation par MCO : Sans les variables instrumentales 
+modele_mco <- Emission %>% select(-Adolescents_out_of_school, -Trade_percent_of_GDP, -Mortality_rate) %>%
+  lm(Emissions_CO2~., data=.)
+
+#Estimation par 2MCO : Avec les instruments Adolescents_out_of_school, Trade_percent_of_GDP, Mortality_rate
+modele_double_mco <- ivreg( Emissions_CO2 ~ GDP_per_capita + Manufacturing_percent_of_GDP + Gross_fixed_capital_formation + Population_15_64 | Mortality_rate + Manufacturing_percent_of_GDP + Adolescents_out_of_school + Population_15_64 + Trade_percent_of_GDP + Gross_fixed_capital_formation,  data=Emission)
+```
+
+
+```{r, warning=F,  comment=""}
+stargazer(modele_mco, modele_double_mco, type='text', title = "Résumé des différents modèles")
+```
+
+Résumé des résultats
+
+Modèle(1)
+
+- *PIB par habitant (GDP_per_capita)* : Le coefficient est significatif et positif, ce qui suggère qu'une augmentation du PIB par habitant est associée à une augmentation des émissions de CO2.
+- *Pourcentage de la population âgée de 15 à 64 ans (Population_15_64)* : Le coefficient est significatif et positif, indiquant que les pays avec une plus grande proportion de la population(15-65) tendent à avoir des émissions de CO2 plus élevées.
+- *Formation brute de capital fixe (Gross_fixed_capital_formation)* : Le coefficient est significatif et positif, ce qui implique que des niveaux plus élevés de formation brute de capital fixe sont associés à des émissions de CO2 plus élevées.
+- *Pourcentage de la valeur ajoutée manufacturière dans le PIB (Manufacturing_percent_of_GDP)* : Le coefficient n'est pas significatif à un niveau de confiance de 95%, ce qui suggère qu'il n'y a pas de relation claire entre la part de la valeur ajoutée manufacturière dans le PIB et les émissions de CO2.
+
+L'estimation par les MCO donne des résultats possiblement biaisé si l'on a bien un problème d'endogénéïté. Il faut donc mettre en place un modèle avec les méthodes des doubles moindres carrés.
+
+
+Modèle IV (2)
+
+Les coefficients pour les variables explicatives sont similaires à ceux du modèle OLS en termes de signe et de magnitude. En utilisant les instruments pour traiter l'endogénéité, les coefficients restent significatifs et leur interprétation reste similaire au modèle 1.
+
+Comparaison des modèles
+
+Les R² ajustés sont similaires entre les deux modèles, indiquant qu'ils expliquent chacun environ 47-49% de la variance des émissions de CO2. Les erreurs-types résiduelles sont similaires entre les deux modèles, suggérant que l'ajout d'instruments n'a pas beaucoup affecté la précision des estimations. Le test F pour l'ensemble de la régression est significatif dans les deux cas, indiquant que les modèles sont statistiquement significatifs dans l'ensemble.
+
+En résumé, les résultats des deux modèles montrent que le PIB par habitant, la proportion de la population en âge de travailler et la formation brute de capital fixe sont des déterminants importants des émissions de CO2. L'utilisation de variables instrumentales dans le deuxième modèle confirme ces résultats et permet de traiter l'endogénéité potentielle.
+
+
+```{r,  comment=""}
+summary( modele_double_mco, diagnostics=TRUE)
+```
+
+
+## Weak instrument
+```{r,  comment=""}
+GDP_FRM <- lm(GDP_per_capita  ~ Mortality_rate + 
+    Manufacturing_percent_of_GDP + Adolescents_out_of_school + 
+    Population_15_64 + Trade_percent_of_GDP + Gross_fixed_capital_formation,  data=Emission)
+
+GDP_FRMC <- lm(GDP_per_capita  ~ Manufacturing_percent_of_GDP + 
+    Gross_fixed_capital_formation + Population_15_64,  data=Emission)
+
+anova(GDP_FRMC, GDP_FRM)
+```
+Le test de weak instrument indique que les variables taux de mortalité enfantile, ratio commerce/PIB et pourcentage d'adolescent descolarisé sont de bons instruments car ils sont corrélés à la variable PIB par tête. On teste alors la pertinance de l'estimateur des doubles MCO.
+
+
+## Test de Hausman-Wu 
+
+
+```{r,  comment=""}
+residu = residuals(GDP_FRM)
+Wu_Hausman <- lm(Emissions_CO2 ~  GDP_per_capita + Manufacturing_percent_of_GDP + Gross_fixed_capital_formation + Population_15_64 + residu, data = Emission)
+
+summary(Wu_Hausman)
+```
+
+Le test d'Hausman confirme notre hypothèse initial d'endogénéïté dans le modèle. 
+
+Le test de Sargan renvoie une p-value supérieur à 5% alors nos variables instrumental ne sont pas corrélés aux résidus.
+
+
+
+
+
+# Traitement de la multicolinéarité
+
+Nous avons vu dans la partie "Analyse descriptive des données" que certains couples de variables dont le pourcentage de mortalité et le pourcentage d'adolescent déscolarisé ont un coefficient de corrélation élevé. Les résultats des estimations obtenu par la méthode des moidres carrés sont très sensibles au moindre changement des variables explicatives.Ils sont instables et donc difficiles à interpréter, il est donc nécessaire de traiter ce problème.
+
+
+Avec le facteur d'inflation de la variance nous allons déterminer pour un seuil de 3 les variables qui ont une forte relation linéaire avec les autres régresseurs.
+
+```{r}
+modele = lm(Emissions_CO2~., data = Emission)
+
+# Calculer les facteurs d'inflation de la variance (VIF)
+vif_values = vif(modele)
+vif_values_sqrt = sqrt(vif_values)
+
+# Afficher les valeurs VIF
+print("Valeurs VIF :")
+print(vif_values[which(vif_values>=5)])
+```
+
+Le VIF nous indique qu'aucune de nos variables ne semble corrélé entre elles, en effet les VIF caclulés sont tous inférieur à 5.
+
+```{r, comment=""}
+mat_corr = cor(Emission)
+mat_corr^2 > 0.8
+```
+
+Le test sur le carré des coefficients de corrélation sont tous inférieur à 0.8, on accord avec le VIF, on ne suspecte pas de problème de multicolinéarité.
+
+```{r, comment=""}
+#Si le carré du coefficient de corrélation est supérieur au R^2, on peut soupçonner de la colinéarité.
+mat_corr^2 > summary(modele)$r.squared
+```
+
+Enfin , aucun carré des coefficients de corrélation n'est supérieur au $R^2$.
+Nous pouvons donc conclure qu'il n'y a pas de problème de multicolinéarité entre nos variables.
+
+## Méthode en grande dimension
+
+Bien que les vérifications effectuées sur la présence de la multicolinéarité sont retournées nulles, nous avons tout de même constaté un lien linéaire entre plusieurs variables lors de l'étude descriptive de nos données. De fait, nous allons donc mettre en place et étudier différente méthode de réduction de dimension puis de pénalisation afin de voir et de discuter de ce qu'il en sort.
+
+### PCR
+
+*Modélisation et test des performances du modèle*
+```{r , comment=""}
+set.seed(500)
+pcr_emiss <- pcr(Emissions_CO2~., data=Emission, scale=TRUE, jackknife = TRUE, validation="CV", ncomp=7)
+summary(pcr_emiss)
+```
+
+Après avoir estimer notre modèle de régression en composante principale, l'estimation du risque moyen d'erreur RMSEP par validation croisée nous suggère de retenir les 6 premières composantes avec une RMSEP = 2.798 pour notre modèle PCR final. Ainsi, nous retrouvons que notre modèle finale à 6 composantes explique 97.79% de la variance.
+
+
+```{r, comment=""}
+explvar(pcr_emiss)
+```
+
+On constate que les 3 premieres composantes expliquent à elles seules $\frac{3}{4}$ de la variance.
+
+
+### PLS
+
+*Modélisation et test des performances du modèle*
+```{r, comment=""}
+pls_emiss <- plsr(Emissions_CO2~., data=Emission, scale=TRUE, jackknife = TRUE,validation="CV")
+summary(pls_emiss)
+```
+
+Pour le modèle de régression des moindres carrés partiels, l'estimation du risque moyen d'erreur RMSEP par validation croisée nous suggère de retenir les 4 premières composantes avec une RMSE = 2.811 pour notre modèle PLS final. Ainsi, nous retrouvons que notre modèle finale à 4 composantes explique 74.35% de la variance.
+
+
+### Conclusion
+
+Pour la réduction de dimension, suivant le principe de parcimonie, la méthode la plus efficace est la régression des moindres carrés partiels qui nous renvoie un modèle faisait un nombre d'erreur équivalent à celui du modèle obtenus par la régression sur composantes principales mais avec un nombre de paramètre plus faible. A savoir, une RMSE de 2.81 pour la methode PLS et une RMSE d'environ 2.8.
+
+
+*Coefficient estimée*
+```{r, message=F,out.width="100%", warning=FALSE, comment=""}
+#Coefficient variable centré réduite
+coeff_pls = coefficients(pls_emiss, ncomp=4)
+#Ecart-type variable initiale
+sd_var = Emission %>% select(GDP_per_capita, Adolescents_out_of_school, Population_15_64,
+                    Mortality_rate, Gross_fixed_capital_formation, Manufacturing_percent_of_GDP,
+                    Trade_percent_of_GDP) %>% map(sd) %>% as.data.frame() %>% t()
+#Coefficient variable initiale
+coeff_var_init = merge(coeff_pls,sd_var,by="row.names") %>% 
+  mutate(coeff = `Emissions_CO2.4 comps`/V1) %>% select(Row.names, coeff)
+
+coeff_var_init
+```
+
+*Interprétation des coefficients*
+```{r, warning=F,out.width="100%"}
+coefplot(pls_emiss, ncomp=4, se.whiskers = TRUE, labels = prednames(pls_emiss), cex.axis = 0.5)
+```
+La variabilité des coefficients estimés par validation croisée pour le PIB par habitant (GDP_per_capita) est très forte, et donc l'estimation du coefficient associé ne semble pas pertinente, contrairement à l'ensemble des autres variables. De plus, pour la part d'adolescents déscolarisés (Adolescents_out_of_school), le taux de mortalité (Mortality_rate) et la part de la production manufacturière dans le PIB (Manufacturing_percent_of_GDP), il n'est pas totalement certain que ces variables soient différentes de 0. En revanche, la part de la population âgée entre 15 et 64 ans, la FBCF et la part du commerce extérieur dans le PIB semblent significatives et plus précises.
+
+Ainsi, nous pouvons dire avec un certain degré de confiance toutes choses égale par ailleurs, qu'une variation d'un point de pourcentage de la part de population agées entre 15 et 64 ans entrainera une augmentation de 0.23 des tonnes de $CO²$ émis par habitant, qu'une variation d'une unité de la FBCF entrainera une augmentation de 0.1 d'émission de tonnes de $CO²$ par habitant, qu'une variation d'un point de pourcentage de la part du commerce extérieur dans le PIB entrainera une diminution de -0.014 des tonnes de $CO²$ émis par habitant.
+
+
+## Méthode de pénalisation
+
+Le nombre de varaible est une mesure de la complexité des algorithmes linéaires, afin d'éviter les biais de sur-apprentissage il est essentiel de le controler. Pour cela, nous allons utiliser la méthode de regression Elastic Net qui combine les méthodes de régression Ridge et Lasso à travers un paramètre lambda donnant plus ou moins de poids à l'une des méthodes par rapport à l'autre.
+
+
+### Elastic net
+
+*Entrainement du modèle*
+```{r, message=F, warning=F, include=FALSE}
+train.samples <- Emission$Emissions_CO2 %>% createDataPartition(p=0.75, list = FALSE)
+train.data <- Emission[train.samples,]
+test.data <-  Emission[- train.samples,]
+
+
+custom <- trainControl(method = "repeatedcv", number = 10, repeats = 5,verboseIter = TRUE)
+
+set.seed(1234)
+model1 <- train(Emissions_CO2~. , data=train.data, method='glmnet',
+            tuneGrid =expand.grid(.alpha=seq(0,1,length=20),
+                                  .lambda =seq(0,10,length=10)),
+            trControl=custom)
+
+```
+
+```{r, message=F, warning=F, comment=""}
+model1$results %>% arrange(RMSE) %>% slice(1)
+
+```
+
+
+Après avoir entrainé plusieurs modèle de régression Elastic Net pour un ensemble de paramètres $\alpha \in [0,1]$ avec un pas de 0.05 et $\lambda \in [0,10]$ avec un pas de $\frac{11}{10}$, celui qui minimise l'erreur de prévision estimé à partir de la validation croisée est le modèle avec comme paramètres $\alpha = 0.315$ et $\lambda = 1.05$ avec une RMSE = 2.533. Plus faible que celle obtenu par la méthode PLS.
+
+```{r,out.width="100%"}
+plot(varImp(model1))
+```
+
+Pour ce modèle, les variables les plus pertinentes sont la FBCF, qui mesure les dépenses totales du pays consacrées à la production de capital fixe, le taux de mortalité, susceptible de varier en fonction des conditions de vie des habitants (par exemple : pollution de l'air, accès aux soins, etc...), ainsi que la proportion d'adolescents déscolarisés, liée à l'insertion professionnelle précoce des jeunes dans le secteur de l'industrie dans les pays du Sud.
+
+
+# Double machine learning
+
+## Instanciation et ajustement du modèle DoubleMLPLR
+```{r}
+# Transformation des variables catégorielles en variables numériques (si nécessaire)
+dummy <- dummyVars(" ~ .", data = Emission)
+Emission <- data.frame(predict(dummy, newdata = Emission))
+
+doubleml_data <- double_ml_data_from_data_frame(Emission,
+                                                y_col = "Emissions_CO2",
+                                                d_cols = "GDP_per_capita",
+                                                x_cols = c("Population_15_64", "Manufacturing_percent_of_GDP"))
+
+
+# Configuration des learners pour les composantes du modèle
+ml_gdp = lrn("regr.cv_glmnet", s = "lambda.min")
+ml_pop = lrn("regr.cv_glmnet", s = "lambda.min")
+
+
+# Création de l'objet DoubleMLPLR
+doubleml_plr = DoubleMLPLR$new(doubleml_data, ml_gdp, ml_pop)
+doubleml_plr$fit()
+doubleml_plr$summary()
+```
+L'analyse du Double Machine Learning montre que l'augmentation du PIB par habitant est positivement associée à une augmentation des émissions de CO2 (effet causale). Avec chaque unité supplémentaire de PIB par habitant, les émissions de CO2 augmentent de 0.00009829 unités. Cette relation est statistiquement très significative, indiquant que le développement économique, tel que mesuré par le PIB, peut contribuer à une augmentation des émissions, ce qui pose d'importantes questions sur les impacts environnementaux de la croissance économique.
+
+## Bootstrap , intervalle de confiance et ajustement des p-values
+
+```{r}
+doubleml_plr$bootstrap(method = "normal", n_rep_boot = 1000)
+
+# Intervalles de confiance simultanés
+doubleml_plr$confint(joint = TRUE)
+
+# Ajustement des p-valeurs
+doubleml_plr$p_adjust(method = "romano-wolf")
+doubleml_plr$p_adjust(method = "bonferroni")
+
+```
+Les résultats montrent clairement que l'effet du PIB par habitant sur les émissions de CO2 est statistiquement significatif et robuste. Les intervalles de confiance indiquent que cet effet est positivement estimé entre environ 0.0000626 et 0.0001282. Même après des ajustements rigoureux pour le contrôle des erreurs multiples via les méthodes de Romano-Wolf et de Bonferroni, l'impact significatif du PIB par habitant sur les émissions reste extrêmement faible en termes de p-valeur. Ces analyses confirment que l'augmentation du PIB par habitant est associée à une hausse des émissions de CO2, mettant en lumière l'importance des considérations environnementales dans les politiques de croissance économique.
+
+
+# Annexe
+
+- **Partie 1 Introduction et présentation du sujet** : Emmarius 100%
+- **Partie 2 Collecte et traitement des données** : Emmarius 100%
+- **Partie 3 Analyse descriptive des données** : Mohamed 75% (code, commentaire) Emmarius 25% (commentaire)
+- **Parite 4 Problème d'endogénéïté** : Emmarius 50% (specification du modele, test, commentaire) Mohamed 50% (specification du modele, test, commentaire) 
+- **Partie 5 Traitement de la multicolinéarité** : Emmarius 100%
+- **Partie 6 Double machine learning** : Mohamed 100%
